@@ -1,47 +1,73 @@
-import { Button } from '@sd/ui';
+import { useLibraryMutation, useLibraryQuery } from '@sd/client';
+import { Button, CategoryHeading } from '@sd/ui';
+import { useMemo } from 'react';
 
 import { DefaultProps } from '../primitive/types';
-import { Key } from './Key';
+import { DummyKey, Key } from './Key';
 
 export type KeyListProps = DefaultProps;
 
-export function KeyList(props: KeyListProps) {
+export const ListOfKeys = () => {
+	const keys = useLibraryQuery(['keys.list']);
+	const mountedUuids = useLibraryQuery(['keys.listMounted']);
+
+	// use a separate route so we get the default key from the key manager, not the database
+	// sometimes the key won't be stored in the database
+	const defaultKey = useLibraryQuery(['keys.getDefault']);
+
+	const [mountedKeys, unmountedKeys] = useMemo(
+		() => [
+			keys.data?.filter((key) => mountedUuids.data?.includes(key.uuid)) ?? [],
+			keys.data?.filter((key) => !mountedUuids.data?.includes(key.uuid)) ?? []
+		],
+		[keys, mountedUuids]
+	);
+
+	if (keys.data?.length === 0) {
+		return <DummyKey text="No keys available" />;
+	}
+
+	return (
+		<>
+			{[...mountedKeys, ...unmountedKeys]?.map((key, index) => {
+				return (
+					<Key
+						index={index}
+						data={{
+							id: key.uuid,
+							name: `Key ${key.uuid.substring(0, 8).toUpperCase()}`,
+							mounted: mountedKeys.includes(key),
+							default: defaultKey.data === key.uuid
+							// key stats need including here at some point
+						}}
+					/>
+				);
+			})}
+		</>
+	);
+};
+
+export const KeyList = (props: KeyListProps) => {
+	const unmountAll = useLibraryMutation(['keys.unmountAll']);
+
 	return (
 		<div className="flex flex-col h-full max-h-[360px]">
 			<div className="p-3 custom-scroll overlay-scroll">
 				<div className="">
 					{/* <CategoryHeading>Mounted keys</CategoryHeading> */}
 					<div className="space-y-1.5">
-						<Key
-							index={0}
-							data={{
-								id: 'af5570f5a1810b7a',
-								name: 'OBS Recordings',
-								mounted: true,
-
-								nodes: ['node1', 'node2'],
-								stats: { objectCount: 235, containerCount: 2 }
-							}}
-						/>
-						<Key
-							index={1}
-							data={{
-								id: 'af5570f5a1810b7a',
-								name: 'Unknown Key',
-								locked: true,
-								mounted: true,
-								stats: { objectCount: 45 }
-							}}
-						/>
-						<Key index={2} data={{ id: '7324695a52da67b1', name: 'Spacedrive Company' }} />
-						<Key index={3} data={{ id: 'b02303d68d05a562', name: 'Key 4' }} />
-						<Key index={3} data={{ id: 'b02303d68d05a562', name: 'Key 5' }} />
-						<Key index={3} data={{ id: 'b02303d68d05a562', name: 'Key 6' }} />
+						<ListOfKeys />
 					</div>
 				</div>
 			</div>
 			<div className="flex w-full p-2 border-t border-app-line rounded-b-md">
-				<Button size="sm" variant="gray">
+				<Button
+					size="sm"
+					variant="gray"
+					onClick={() => {
+						unmountAll.mutate(null);
+					}}
+				>
 					Unmount All
 				</Button>
 				<div className="flex-grow" />
@@ -51,4 +77,4 @@ export function KeyList(props: KeyListProps) {
 			</div>
 		</div>
 	);
-}
+};

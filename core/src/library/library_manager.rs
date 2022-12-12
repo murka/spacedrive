@@ -1,7 +1,7 @@
 use crate::{
 	invalidate_query,
 	node::Platform,
-	prisma::{node, PrismaClient},
+	prisma::{key, node, PrismaClient},
 	util::{
 		db::load_and_migrate,
 		seeder::{indexer_rules_seeder, SeederError},
@@ -12,7 +12,7 @@ use crate::{
 use sd_crypto::{
 	crypto::stream::Algorithm,
 	keys::{
-		hashing::HashingAlgorithm,
+		hashing::{HashingAlgorithm, Params},
 		keymanager::{KeyManager, StoredKey},
 	},
 	primitives::to_array,
@@ -24,7 +24,7 @@ use std::{
 	sync::Arc,
 };
 use thiserror::Error;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use super::{LibraryConfig, LibraryConfigWrapped, LibraryContext};
@@ -37,53 +37,6 @@ pub struct LibraryManager {
 	libraries: RwLock<Vec<LibraryContext>>,
 	/// node_context holds the context for the node which this library manager is running on.
 	node_context: NodeContext,
-}
-
-pub async fn create_keymanager(client: &PrismaClient) -> Result<KeyManager, SeederError> {
-	// retrieve all stored keys from the DB
-	let mut key_manager = KeyManager::new(vec![], None);
-
-	let db_stored_keys = client.key().find_many(vec![]).exec().await?;
-
-	let mut default = Uuid::default();
-
-	// collect and serialize the stored keys
-	let stored_keys: Vec<StoredKey> = db_stored_keys
-		.iter()
-		.map(|d| {
-			let d = d.clone();
-			let uuid = uuid::Uuid::from_str(&d.uuid).unwrap();
-
-			if d.default {
-				default = uuid;
-			}
-
-			StoredKey {
-				uuid,
-				salt: to_array(d.salt).unwrap(),
-				algorithm: Algorithm::deserialize(to_array(d.algorithm).unwrap()).unwrap(),
-				content_salt: to_array(d.content_salt).unwrap(),
-				master_key: to_array(d.master_key).unwrap(),
-				master_key_nonce: d.master_key_nonce,
-				key_nonce: d.key_nonce,
-				key: d.key,
-				hashing_algorithm: HashingAlgorithm::deserialize(
-					to_array(d.hashing_algorithm).unwrap(),
-				)
-				.unwrap(),
-			}
-		})
-		.collect();
-
-	// insert all keys from the DB into the keymanager's keystore
-	key_manager.populate_keystore(stored_keys).unwrap();
-
-	// if any key had an associated default tag
-	if !default.is_nil() {
-		key_manager.set_default(default).unwrap();
-	}
-
-	Ok(key_manager)
 }
 
 #[derive(Error, Debug)]
@@ -104,6 +57,8 @@ pub enum LibraryManagerError {
 	InvalidDatabasePath(PathBuf),
 	#[error("Failed to run seeder: {0}")]
 	Seeder(#[from] SeederError),
+	#[error("failed to initialise the key manager")]
+	KeyManager(#[from] sd_crypto::Error),
 }
 
 impl From<LibraryManagerError> for rspc::Error {
@@ -114,6 +69,94 @@ impl From<LibraryManagerError> for rspc::Error {
 			error,
 		)
 	}
+}
+
+pub async fn create_keymanager(client: &PrismaClient) -> Result<KeyManager, LibraryManagerError> {
+	// retrieve all stored keys from the DB
+	let key_manager = KeyManager::new(vec![]);
+
+	// BRXKEN128: REMOVE THIS ONCE ONBOARDING HAS BEEN DONE
+	// this is so if there's no verification key set, we set one so users can use the key manager
+	// it will be done during onboarding, but for now things are statically set (unless they were changed)
+	if client
+		.key()
+		.find_many(vec![key::uuid::equals(uuid::Uuid::nil().to_string())])
+		.exec()
+		.await?
+		.is_empty()
+	{
+		client
+			.key()
+			.delete_many(vec![key::uuid::equals(uuid::Uuid::nil().to_string())])
+			.exec()
+			.await?;
+		// BRXKEN128: REMOVE THIS ONCE ONBOARDING HAS BEEN DONE
+		let verification_key = KeyManager::onboarding(
+			Algorithm::XChaCha20Poly1305,
+			HashingAlgorithm::Argon2id(Params::Standard),
+		)?
+		.verification_key;
+
+		// BRXKEN128: REMOVE THIS ONCE ONBOARDING HAS BEEN DONE
+		client
+			.key()
+			.create(
+				verification_key.uuid.to_string(),
+				verification_key.algorithm.serialize().to_vec(),
+				verification_key.hashing_algorithm.serialize().to_vec(),
+				verification_key.content_salt.to_vec(),
+				verification_key.master_key.to_vec(),
+				verification_key.master_key_nonce.to_vec(),
+				verification_key.key_nonce.to_vec(),
+				verification_key.key.to_vec(),
+				vec![],
+			)
+			.exec()
+			.await?;
+	}
+
+	let db_stored_keys = client.key().find_many(vec![]).exec().await?;
+
+	let mut default = Uuid::nil();
+
+	// collect and serialize the stored keys
+	// shouldn't call unwrap so much here
+	let stored_keys: Vec<StoredKey> = db_stored_keys
+		.iter()
+		.map(|key| {
+			let key = key.clone();
+
+			let uuid = uuid::Uuid::from_str(&key.uuid).unwrap();
+
+			if key.default {
+				default = uuid;
+			}
+
+			StoredKey {
+				uuid,
+				algorithm: Algorithm::deserialize(to_array(key.algorithm).unwrap()).unwrap(),
+				content_salt: to_array(key.content_salt).unwrap(),
+				master_key: to_array(key.master_key).unwrap(),
+				master_key_nonce: key.master_key_nonce,
+				key_nonce: key.key_nonce,
+				key: key.key,
+				hashing_algorithm: HashingAlgorithm::deserialize(
+					to_array(key.hashing_algorithm).unwrap(),
+				)
+				.unwrap(),
+			}
+		})
+		.collect();
+
+	// insert all keys from the DB into the keymanager's keystore
+	key_manager.populate_keystore(stored_keys)?;
+
+	// if any key had an associated default tag
+	if !default.is_nil() {
+		key_manager.set_default(default)?;
+	}
+
+	Ok(key_manager)
 }
 
 impl LibraryManager {
@@ -318,7 +361,7 @@ impl LibraryManager {
 		// Run seeders
 		indexer_rules_seeder(&db).await?;
 
-		let key_manager = Arc::new(Mutex::new(create_keymanager(&db).await?));
+		let key_manager = Arc::new(create_keymanager(&db).await?);
 
 		Ok(LibraryContext {
 			id,

@@ -8,8 +8,6 @@
 	],
 	"scripts": {
 		"test": "jest",
-		"dev": "tsc -w",
-		"build": "tsc",
 		"lint": "TIMING=1 eslint src --fix",
 		"clean": "rm -rf .turbo && rm -rf node_modules && rm -rf dist"
 	},
@@ -18,8 +16,7 @@
 		"@rspc/react": "^0.0.0-main-7c0a67c1",
 		"@sd/config": "workspace:*",
 		"@tanstack/react-query": "^4.12.0",
-		"valtio": "^1.7.4",
-		"valtio-persist": "^1.0.2"
+		"valtio": "^1.7.4"
 	},
 	"devDependencies": {
 		"@types/react": "^18.0.21",
