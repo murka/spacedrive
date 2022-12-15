@@ -1,7 +1,10 @@
 //! This module contains the crate's STREAM implementation, and wrappers that allow us to support multiple AEADs.
 use std::io::{Cursor, Read, Write};
 
-use crate::{primitives::BLOCK_SIZE, Error, Protected, Result};
+use crate::{
+	primitives::{AEAD_TAG_SIZE, BLOCK_SIZE, KEY_LEN},
+	Error, Protected, Result,
+};
 use aead::{
 	stream::{DecryptorLE31, EncryptorLE31},
 	KeyInit, Payload,
@@ -49,7 +52,7 @@ impl StreamEncryption {
 	///
 	/// The master key, a suitable nonce, and a specific algorithm should be provided.
 	#[allow(clippy::needless_pass_by_value)]
-	pub fn new(key: Protected<[u8; 32]>, nonce: &[u8], algorithm: Algorithm) -> Result<Self> {
+	pub fn new(key: Protected<[u8; KEY_LEN]>, nonce: &[u8], algorithm: Algorithm) -> Result<Self> {
 		if nonce.len() != algorithm.nonce_len() {
 			return Err(Error::NonceLengthMismatch);
 		}
@@ -108,7 +111,7 @@ impl StreamEncryption {
 	{
 		let mut read_buffer = vec![0u8; BLOCK_SIZE].into_boxed_slice();
 		loop {
-			let read_count = reader.read(&mut read_buffer).map_err(Error::Io)?;
+			let read_count = reader.read(&mut read_buffer)?;
 			if read_count == BLOCK_SIZE {
 				let payload = Payload {
 					aad,
@@ -132,7 +135,7 @@ impl StreamEncryption {
 			}
 		}
 
-		writer.flush().map_err(Error::Io)?;
+		writer.flush()?;
 
 		Ok(())
 	}
@@ -142,7 +145,7 @@ impl StreamEncryption {
 	/// It is just a thin wrapper around `encrypt_streams()`, but reduces the amount of code needed elsewhere.
 	#[allow(unused_mut)]
 	pub fn encrypt_bytes(
-		key: Protected<[u8; 32]>,
+		key: Protected<[u8; KEY_LEN]>,
 		nonce: &[u8],
 		algorithm: Algorithm,
 		bytes: &[u8],
@@ -151,10 +154,9 @@ impl StreamEncryption {
 		let mut writer = Cursor::new(Vec::<u8>::new());
 		let encryptor = Self::new(key, nonce, algorithm)?;
 
-		match encryptor.encrypt_streams(bytes, &mut writer, aad) {
-			Ok(_) => Ok(writer.into_inner()),
-			Err(e) => Err(e),
-		}
+		encryptor
+			.encrypt_streams(bytes, &mut writer, aad)
+			.map_or_else(Err, |_| Ok(writer.into_inner()))
 	}
 }
 
@@ -163,7 +165,7 @@ impl StreamDecryption {
 	///
 	/// The master key, nonce and algorithm that were used for encryption should be provided.
 	#[allow(clippy::needless_pass_by_value)]
-	pub fn new(key: Protected<[u8; 32]>, nonce: &[u8], algorithm: Algorithm) -> Result<Self> {
+	pub fn new(key: Protected<[u8; KEY_LEN]>, nonce: &[u8], algorithm: Algorithm) -> Result<Self> {
 		if nonce.len() != algorithm.nonce_len() {
 			return Err(Error::NonceLengthMismatch);
 		}
@@ -220,11 +222,11 @@ impl StreamDecryption {
 		R: Read,
 		W: Write,
 	{
-		let mut read_buffer = vec![0u8; BLOCK_SIZE + 16].into_boxed_slice();
+		let mut read_buffer = vec![0u8; BLOCK_SIZE + AEAD_TAG_SIZE].into_boxed_slice();
 
 		loop {
-			let read_count = reader.read(&mut read_buffer).map_err(Error::Io)?;
-			if read_count == (BLOCK_SIZE + 16) {
+			let read_count = reader.read(&mut read_buffer)?;
+			if read_count == (BLOCK_SIZE + AEAD_TAG_SIZE) {
 				let payload = Payload {
 					aad,
 					msg: &read_buffer,
@@ -246,7 +248,7 @@ impl StreamDecryption {
 			}
 		}
 
-		writer.flush().map_err(Error::Io)?;
+		writer.flush()?;
 
 		Ok(())
 	}
@@ -256,19 +258,17 @@ impl StreamDecryption {
 	/// It is just a thin wrapper around `decrypt_streams()`, but reduces the amount of code needed elsewhere.
 	#[allow(unused_mut)]
 	pub fn decrypt_bytes(
-		key: Protected<[u8; 32]>,
+		key: Protected<[u8; KEY_LEN]>,
 		nonce: &[u8],
 		algorithm: Algorithm,
 		bytes: &[u8],
 		aad: &[u8],
 	) -> Result<Protected<Vec<u8>>> {
 		let mut writer = Cursor::new(Vec::<u8>::new());
-
 		let decryptor = Self::new(key, nonce, algorithm)?;
 
-		match decryptor.decrypt_streams(bytes, &mut writer, aad) {
-			Ok(_) => Ok(Protected::new(writer.into_inner())),
-			Err(e) => Err(e),
-		}
+		decryptor
+			.decrypt_streams(bytes, &mut writer, aad)
+			.map_or_else(Err, |_| Ok(Protected::new(writer.into_inner())))
 	}
 }
