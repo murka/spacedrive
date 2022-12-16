@@ -175,7 +175,7 @@ impl StatefulJob for FileEncryptorJob {
 					user_key_details.hashing_algorithm,
 					user_key_details.content_salt,
 					user_key,
-					&master_key,
+					master_key.clone(),
 				)?];
 
 				let mut header =
@@ -207,7 +207,7 @@ impl StatefulJob for FileEncryptorJob {
 						header.add_metadata(
 							LATEST_METADATA,
 							state.init.algorithm,
-							&master_key,
+							master_key.clone(),
 							&metadata,
 						)?;
 					}
